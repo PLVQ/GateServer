@@ -12,12 +12,10 @@ import (
 )
 
 type TCPServer struct {
-	Addr            string               // 监听网络地址
-	MaxConnNum      int                  // 最大连接数
-	PendingWriteNum int                  // 连接最大可写数
-	NewAgent        func(*TCPConn) Agent // 代理
+	Addr            string // 监听网络地址
+	MaxConnNum      int    // 最大连接数
+	PendingWriteNum int    // 连接最大可写数
 	ln              net.Listener
-	conns           ConnSet // 连接集合
 	mutexConns      sync.Mutex
 	wgLn            sync.WaitGroup
 	wgConns         sync.WaitGroup
@@ -27,14 +25,9 @@ type TCPServer struct {
 	MinMsgLen    uint32
 	MaxMsgLen    uint32
 	LittleEndian bool
-	msgParser    *MsgParser
 
 	// 连接代理池
-	agentLen  uint32
-	agentList []Agent
-
-	// nsq消费者
-	nsqConsumer *nsq.Consumer
+	AgentMap map[int64]*agent
 }
 
 func (server *TCPServer) Start() {
@@ -62,29 +55,9 @@ func (server *TCPServer) init() {
 		log.Log.WithField("PendingWriteNum", server.PendingWriteNum).Info("Invalid PendingWriteNum And Reset")
 	}
 
-	if server.NewAgent == nil {
-		log.Log.Fatal("NewAgent must not be nil")
-	}
-
 	server.ln = ln
-	server.conns = make(ConnSet)
 
-	msgParser := NewMsgParser()
-	msgParser.SetMsgLen(server.MinMsgLen, server.MaxMsgLen)
-	msgParser.SetByteOrder(server.LittleEndian)
-	server.msgParser = msgParser
-
-	server.agentList = make([]Agent, server.MaxConnNum)
-
-	nsqConfig := nsq.NewConfig()
-	if server.nsqConsumer, err = nsq.NewConsumer("game", "main", nsqConfig); err != nil {
-		log.Log.WithField("Error", err.Error()).Fatal("New Nsq Consumer Failed!")
-	}
-
-	server.nsqConsumer.AddHandler(server)
-	if err = server.nsqConsumer.ConnectToNSQD("127.0.0.1:4150"); err != nil {
-		log.Log.WithField("Error", err.Error()).Fatal("Nsq Connect Failed!")
-	}
+	server.AgentMap = make(map[int64]*agent)
 }
 
 func (server *TCPServer) run() {
@@ -110,37 +83,34 @@ func (server *TCPServer) run() {
 		}
 		tempDelay = 0
 
-		server.mutexConns.Lock()
-		if len(server.conns) >= server.MaxConnNum {
+		if int(Connections.count) >= server.MaxConnNum {
 			server.mutexConns.Unlock()
 			conn.Close()
 			log.Log.Debug("too many connections")
 			continue
 		}
 
-		server.conns[conn] = struct{}{}
-		server.mutexConns.Unlock()
-
 		server.wgConns.Add(1)
 
-		tcpConn := newTCPConn(conn, server.PendingWriteNum, server.msgParser)
-		agent := server.NewAgent(tcpConn)
+		agent := newAgent(conn)
 		go func() {
 			agent.Run()
-
-			tcpConn.Close()
-			server.mutexConns.Lock()
-			delete(server.conns, conn)
-			server.mutexConns.Unlock()
 
 			agent.OnClose()
 
 			server.wgConns.Done()
 		}()
-
-		server.agentList[server.agentLen] = agent
-		server.agentLen++
+		server.AgentMap[agent.ID] = agent
 	}
+}
+
+func (server *TCPServer) GetAgent(agentID int64) *agent {
+	agent, ok := server.AgentMap[agentID]
+	if !ok {
+		return nil
+	}
+
+	return agent
 }
 
 func (server *TCPServer) Close() {
@@ -148,11 +118,11 @@ func (server *TCPServer) Close() {
 	server.wgLn.Wait()
 
 	server.mutexConns.Lock()
-	for conn := range server.conns {
-		conn.Close()
+	for _, agent := range server.AgentMap {
+		agent.OnClose()
 	}
 
-	server.conns = nil
+	server.AgentMap = nil
 	server.mutexConns.Unlock()
 	server.wgConns.Wait()
 }

@@ -1,15 +1,10 @@
 package gate
 
 import (
-	"net"
-	"reflect"
 	"time"
 
-	"gateServer/log"
 	"gateServer/network"
-	"gateServer/nsqproducer"
-
-	"github.com/sirupsen/logrus"
+	"gateServer/nsqer"
 )
 
 type Gate struct {
@@ -57,12 +52,9 @@ func (gate *Gate) Run(closeSig chan bool) {
 		tcpServer.LenMsgLen = gate.LenMsgLen
 		tcpServer.MaxMsgLen = gate.MaxMsgLen
 		tcpServer.LittleEndian = gate.LittleEndian
-		tcpServer.NewAgent = func(conn *network.TCPConn) network.Agent {
-			a := &agent{conn: conn, gate: gate}
-			return a
-		}
 	}
 
+	go nsqer.InitConsuemr("game", "game", &ClientMsgConsumer{Server: tcpServer})
 	// if wsServer != nil {
 	// 	wsServer.Start()
 	// }
@@ -79,54 +71,3 @@ func (gate *Gate) Run(closeSig chan bool) {
 }
 
 func (gate *Gate) OnDestroy() {}
-
-type agent struct {
-	conn network.Conn
-	gate *Gate
-}
-
-func (a *agent) Run() {
-	for {
-		data, err := a.conn.ReadMsg()
-		if err != nil {
-			log.Log.WithField("Err", err).Debug("read message")
-			break
-		}
-		log.Log.WithField("data", len(data)).Debug()
-		nsqproducer.NsqProducer.Publish("client", data)
-	}
-}
-
-func (a *agent) OnClose() {
-
-}
-
-func (a *agent) WriteMsg(msg interface{}) {
-	if a.gate.Processor != nil {
-		data, err := a.gate.Processor.Marshal(msg)
-		if err != nil {
-			log.Log.WithFields(logrus.Fields{"MsgType": reflect.TypeOf(msg), "Err": err}).Error("marshal message")
-			return
-		}
-		err = a.conn.WriteMsg(data...)
-		if err != nil {
-			log.Log.WithFields(logrus.Fields{"MsgType": reflect.TypeOf(msg), "Err": err}).Error("write message")
-		}
-	}
-}
-
-func (a *agent) LocalAddr() net.Addr {
-	return a.conn.LocalAddr()
-}
-
-func (a *agent) RemoteAddr() net.Addr {
-	return a.conn.RemoteAddr()
-}
-
-func (a *agent) Close() {
-	a.conn.Close()
-}
-
-func (a *agent) Destroy() {
-	a.conn.Destroy()
-}

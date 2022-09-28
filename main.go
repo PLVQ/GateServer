@@ -1,9 +1,11 @@
 package main
 
-import "gateServer/gate"
+import (
+	"gateServer/gate"
+)
 
 func main() {
-	gate := &gate.Gate{
+	gateService := &gate.Gate{
 		MaxConnNum:   20000,
 		MaxMsgLen:    4096,
 		TCPAddr:      "127.0.0.1:3563",
@@ -11,5 +13,5 @@ func main() {
 		LittleEndian: false,
 	}
 	closeSig := make(chan bool, 1)
-	gate.Run(closeSig)
+	gateService.Run(closeSig)
 }
